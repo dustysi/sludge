@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+
+{% block content %}
+  <div style="text-align: center;">
+    <div style="background-color: #f0f0f0; margin: 20px; padding: 20px; display: inline-block; border-radius: 8px;">
+      <h1>Upload your primary clip</h1>
+      <form method="post" enctype="multipart/form-data" id="primary-clip-form">
+        {% csrf_token %}
+        <div id="file-upload-wrapper">
+          {{ upload_form.as_p }}
+        </div>
+      </form>
+    </div>
+    <div id="secondary-section" style="background-color: #d0d0ff; margin: 20px; padding: 20px; display: none; inline-block; border-radius: 8px;">
+      <h1>Select a Secondary Clip</h1>
+      <select name="secondary_clip" id="secondary_clip_dropdown">
+        {% for clip in secondary_clips %}
+          <option value="{{ clip.id }}">{{ clip.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="button" id="generate-button">Generate</button>
+    </div>
+  </div>
+
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const primaryForm = document.getElementById('primary-clip-form');
+    const secondarySection = document.getElementById('secondary-section');
+    const primaryFileInput = document.querySelector('input[type="file"]');
+    
+    primaryFileInput.addEventListener('change', async () => {
+        const file = primaryFileInput.files[0];
+        if (file && file.type.startsWith('video/')) {
+            secondarySection.style.display = 'inline-block';
+        } else {
+            secondarySection.style.display = 'none';
+            alert("Please upload a video file.");
+            primaryFileInput.value = '';
+        }
+    });
+
+    const generateButton = document.getElementById('generate-button');
+generateButton.addEventListener('click', async () => {
+    const response = await fetch('/generate_video/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': '{{ csrf_token }}'
+        },
+        body: JSON.stringify({})
+    });
+
+    const data = await response.json();
+    console.log('Response from server:', data);  // Debugging line
+
+    if (data.status === 'success') {
+        const downloadLink = document.createElement('a');
+        downloadLink.href = data.download_url;
+        downloadLink.innerText = 'Download Combined Video';
+        downloadLink.download = 'combined_video.mp4';
+        document.body.appendChild(downloadLink);
+    } else {
+        alert(data.message || 'An error occurred');
+    }
+});
+  });
+  </script>
+{% endblock %}
