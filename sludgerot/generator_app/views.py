@@ -1,32 +1,39 @@
-from django.shortcuts import render, redirect
-from django.http import JsonResponse
-from django.core.exceptions import ObjectDoesNotExist
-from .models import UploadedClip, SecondaryClip
-from .forms import UploadClipForm, SelectSecondaryClipForm
-from moviepy.editor import VideoFileClip, clips_array
 import logging
+
+from django.http import JsonResponse
+from django.shortcuts import render
+from moviepy.editor import VideoFileClip, clips_array
+
+from sludgerot.settings import MEDIA_ROOT
+from .forms import UploadClipForm, SelectSecondaryClipForm
+from .models import UploadedClip, SecondaryClip
 
 logger = logging.getLogger(__name__)
 
+
 def home(request):
     if request.method == 'POST':
-        if 'clip' in request.FILES:  # Assuming 'clip' is the name of the file field in your form
-            upload_form = UploadClipForm(request.POST, request.FILES)
-            if upload_form.is_valid():
-                primary_clip = upload_form.save()
-                request.session['primary_clip_id'] = primary_clip.id
-                logger.info(f"Saved primary_clip_id in session: {primary_clip.id}")
-                return JsonResponse({'status': 'success', 'form': 'upload_form'})
+        try:
+            sec = request.POST.get('secondary_clip')
+            if sec is None:
+                return JsonResponse({'status': 'failure', 'message': 'Invalid form'})
+            sec = int(sec)
+            if 'clip' in request.FILES:  # Assuming 'clip' is the name of the file field in your form
+                upload_form = UploadClipForm(request.POST, request.FILES)
+                if upload_form.is_valid():
+                    primary_clip = upload_form.save()
+                    request.session['primary_clip_id'] = primary_clip.id
+                    request.session['secondary_clip_id'] = sec
+                    logger.info(f"Saved primary_clip_id in session: {primary_clip.id}")
+                    out_path = generate_video(request)
+                    if out_path['status'] == 'success':
+                        return JsonResponse({'status': 'success', 'url': out_path['url']})
+                    else:
+                        return JsonResponse(out_path)
+            return JsonResponse({'status': 'failure', 'message': 'Invalid form'})
 
-        else:
-            select_form = SelectSecondaryClipForm(request.POST)
-            if select_form.is_valid():
-                selected_clip_id = select_form.cleaned_data.get("secondary_clip", None).id
-                logger.info(f"Debug: selected_clip_id: {selected_clip_id}")
-                request.session['secondary_clip_id'] = selected_clip_id
-                return JsonResponse({'status': 'success', 'form': 'select_form'})
-
-        return JsonResponse({'status': 'failure', 'message': 'Invalid form'})
+        except Exception as e:
+            return {'status': 'failure', 'message': str(e)}
 
     upload_form = UploadClipForm()
     select_form = SelectSecondaryClipForm()
@@ -38,9 +45,6 @@ def home(request):
         'secondary_clips': secondary_clips,
     })
 
-# ... your `generate_video` function remains the same
-
-
 
 def generate_video(request):
     try:
@@ -49,22 +53,33 @@ def generate_video(request):
         primary_clip_id = request.session.get('primary_clip_id')
         secondary_clip_id = request.session.get('secondary_clip_id')
 
-        if not primary_clip_id or not secondary_clip_id:
-            return JsonResponse({'status': 'failure', 'message': 'Missing clips'})
-
         primary_clip = UploadedClip.objects.get(id=primary_clip_id)
         secondary_clip = SecondaryClip.objects.get(id=secondary_clip_id)
 
-        primary_clip = VideoFileClip(primary_clip.clip.path).resize(width=1080)
-        secondary_clip = VideoFileClip(secondary_clip.clip.path).resize(width=1080).volume(0)
+        primary_clip = VideoFileClip(primary_clip.clip.path)
+        secondary_clip = VideoFileClip(secondary_clip.clip.path)
 
-        final_video = clips_array([[primary_clip], [secondary_clip]], method='vstack')
-        output_path = "media/generated_clips/final.mp4"
-        final_video.write_videofile(output_path, codec="libx264", size=(1080, 1920))
+        # Determine the shorter of the two video durations
+        min_duration = min(primary_clip.duration, secondary_clip.duration)
 
-        return JsonResponse({'status': 'success', 'download_url': output_path})
+        # Trim both videos to the shorter duration
+        primary_clip = primary_clip.subclip(0, min_duration)
+        secondary_clip = secondary_clip.subclip(0, min_duration)
 
-    except ObjectDoesNotExist:
-        return JsonResponse({'status': 'failure', 'message': 'Clip does not exist'})
+        # Set the desired width for both videos
+        final_width = (500 * 9) // 16
+
+        primary_clip = primary_clip.resize(width=final_width)
+        # secondary_clip = secondary_clip.without_audio().resize(width=final_width)
+        secondary_clip = secondary_clip.set_audio(None).resize(width=final_width)
+
+        final_video = clips_array([[primary_clip], [secondary_clip]])
+        output_path = MEDIA_ROOT + "/generated_clips/final" + str(primary_clip_id) + ".mp4"
+        final_video.write_videofile(output_path, fps=30, threads=5, codec="libx264", audio_codec="aac",
+                                    ffmpeg_params=["-crf", "23"])
+        # final_video.write_videofile(output_path, fps=30, threads=5, codec="libx264", audio_codec="aac", ffmpeg_params=["-crf", "23"], logger=None)
+
+        return {'status': 'success', "url": "/media/generated_clips/final" + str(primary_clip_id) + ".mp4"}
+
     except Exception as e:
-        return JsonResponse({'status': 'failure', 'message': f'An error occurred: {str(e)}'})
+        return {'status': 'failure', 'message': str(e)}
